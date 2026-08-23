@@ -136,18 +136,34 @@ let _initialized = false;
 const CC_PROXY_SESSION_ID_HEADER = 'x-cindy-cc-session-id';
 const CC_PROXY_SESSION_TOKEN_HEADER = 'x-cindy-cc-session-token';
 const CC_PROXY_INTERNAL_HEADERS = [CC_PROXY_SESSION_ID_HEADER, CC_PROXY_SESSION_TOKEN_HEADER];
-const ccProxySessionTokens = new Map<string, string>();
+interface ClaudeProxySessionRegistration {
+  sessionInstanceId?: string;
+  token: string;
+}
+
+const ccProxySessionTokens = new Map<string, ClaudeProxySessionRegistration>();
 
 /** Mint the per-process proof that lets a fresh CC request select its Cindy session route. */
-export function getClaudeProxySessionAuth(sessionId: string): { sessionId: string; token: string } | null {
+export function getClaudeProxySessionAuth(
+  sessionId: string,
+  sessionInstanceId?: string,
+): { sessionId: string; token: string; dispose: () => void } | null {
   const id = sessionId.trim();
   if (!id) return null;
-  let token = ccProxySessionTokens.get(id);
-  if (!token) {
-    token = randomBytes(32).toString('base64url');
-    ccProxySessionTokens.set(id, token);
-  }
-  return { sessionId: id, token };
+  const registration: ClaudeProxySessionRegistration = {
+    ...(sessionInstanceId?.trim() ? { sessionInstanceId: sessionInstanceId.trim() } : {}),
+    token: randomBytes(32).toString('base64url'),
+  };
+  // One business session can be reopened with a new instance. Replacing the
+  // registration immediately revokes a delayed process from the old instance.
+  ccProxySessionTokens.set(id, registration);
+  return {
+    sessionId: id,
+    token: registration.token,
+    dispose: () => {
+      if (ccProxySessionTokens.get(id) === registration) ccProxySessionTokens.delete(id);
+    },
+  };
 }
 
 /** Internal proxy headers are only safe when this process owns the loopback hop. */
@@ -157,7 +173,8 @@ export function isAnthropicCompatProxyReady(): boolean {
 
 function authenticateClaudeProxySession(sessionId: string | null, token: string | null): string | null {
   if (!sessionId || !token) return null;
-  const expected = ccProxySessionTokens.get(sessionId);
+  const registration = ccProxySessionTokens.get(sessionId);
+  const expected = registration?.token;
   if (!expected || expected.length !== token.length) return null;
   return timingSafeEqual(Buffer.from(expected), Buffer.from(token)) ? sessionId : null;
 }
@@ -945,26 +962,19 @@ export function createModelRoutingTransform(): RoutingTransform {
       headerValue(ctx.headers, 'x-cindy-pi-session-id') !== null
       || headerValue(ctx.headers, 'x-cindy-pi-session-token') !== null
       || headerValue(ctx.headers, 'x-cindy-pi-provider-id') !== null;
-    const hasInternalCcHeader =
-      headerValue(ctx.headers, CC_PROXY_SESSION_ID_HEADER) !== null
-      || headerValue(ctx.headers, CC_PROXY_SESSION_TOKEN_HEADER) !== null;
-    const internalHeadersToDelete = [
-      ...(hasInternalPiHeader
-        ? ['x-cindy-pi-session-id', 'x-cindy-pi-session-token', 'x-cindy-pi-provider-id']
-        : []),
-      ...(hasInternalCcHeader ? CC_PROXY_INTERNAL_HEADERS : []),
-    ];
-    const stripInternalHeaders = (
+    const stripInternalPiHeaders = (
       resolved: RoutingDecision | null,
     ): RoutingDecision | null => {
-      if (!hasInternalPiHeader && !hasInternalCcHeader) return resolved;
+      if (!hasInternalPiHeader) return resolved;
       if (resolved?.localHandler) return resolved;
       return {
         ...(resolved ?? {}),
         headerDelete: [
           ...new Set([
             ...(resolved?.headerDelete ?? []),
-            ...internalHeadersToDelete,
+            'x-cindy-pi-session-id',
+            'x-cindy-pi-session-token',
+            'x-cindy-pi-provider-id',
           ]),
         ],
       };
@@ -981,7 +991,7 @@ export function createModelRoutingTransform(): RoutingTransform {
       // 切换在 await 里完整完成时两端 pending 都是 false。
       if (ownerBoundDispatchUnsafe(ctx)) return ownerBoundaryPendingRoute();
       return withOwnerBoundaryDispatchGate(
-        refuseUnsafePlaceholderPassthrough(stripInternalHeaders(resolved), ctx),
+        refuseUnsafePlaceholderPassthrough(stripInternalPiHeaders(resolved), ctx),
         ctx,
       );
     };
@@ -1024,6 +1034,10 @@ export async function ensureAnthropicCompatProxyReady(): Promise<void> {
       routingTransform: createModelRoutingTransform(),
       revalidateBeforeDispatch: (_decision, ctx) =>
         ownerBoundDispatchUnsafe(ctx) ? ownerBoundaryPendingRoute() : null,
+      // These attestations are meaningful only on the loopback hop. Keeping
+      // stripping in the proxy forwarding layer covers multipart/non-JSON
+      // requests, which intentionally bypass body routing transforms.
+      forwardHeaderDelete: CC_PROXY_INTERNAL_HEADERS,
       // 只读响应观察器(组合三个,互不感知):
       //   - fast mode 链路核验:tee SSE 抽上游 usage.speed(debug-gated);
       //   - 订阅余量旁路:读 anthropic-ratelimit-unified-* headers(仅订阅直连响应,
