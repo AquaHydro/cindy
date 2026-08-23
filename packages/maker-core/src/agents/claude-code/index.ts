@@ -1289,7 +1289,7 @@ export class ClaudeCodeAgent extends BaseAgent {
     // 网关白名单字面比对,裸名必 403。钉到会话自身 wire 模型(唯一确定已授权);
     // 裸名会话(订阅直连/自定义中继)不传,CLI 默认行为零变化。
     const smallFastModel = opts.model.includes('/') ? sdkModel : undefined;
-    let env: NodeJS.ProcessEnv;
+    let env: Record<string, string>;
     try {
       env = await buildClaudeEnv(this.deps.auth, this.deps.runtimeConfig, {
         credentialMode,
@@ -3915,6 +3915,7 @@ export class ClaudeCodeAgent extends BaseAgent {
       runningBackgroundTasks.clear();
       terminalBackgroundTaskIds.clear();
       closed = true;
+      proxySessionAuth?.dispose();
       try { dismissAllPending('session_closed', 'deny'); } catch (e) {
         log.warn(`${logLabel}: dismissAllPending threw`, { error: String(e) });
       }
