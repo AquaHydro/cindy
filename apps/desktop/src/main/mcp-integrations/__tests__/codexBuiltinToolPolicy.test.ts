@@ -16,8 +16,8 @@ describe('frozen built-in tool policy', () => {
     expect(isFrozenBuiltinPluginAllowed(vendorOptions, 'memory')).toBe(true);
   });
 
-  it('fails open only when no valid frozen policy exists', () => {
-    expect(isFrozenBuiltinPluginAllowed(undefined, 'collab')).toBe(true);
+  it('fails closed when no valid frozen policy exists', () => {
+    expect(isFrozenBuiltinPluginAllowed(undefined, 'collab')).toBe(false);
     expect(
       isFrozenBuiltinPluginAllowed(
         {
@@ -25,7 +25,7 @@ describe('frozen built-in tool policy', () => {
         },
         'collab',
       ),
-    ).toBe(true);
+    ).toBe(false);
   });
 
   it('uses a Bot allowlist to block Toolsets installed after the task was frozen', () => {
