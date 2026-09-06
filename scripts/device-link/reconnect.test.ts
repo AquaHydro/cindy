@@ -283,7 +283,7 @@ describe("Device Link over real loopback WebSockets (contract fixture)", () => {
       isLinkTornDown: () => false,
       isRelayOnline: () => desktop.client.getStatus() === "online",
       isDeviceUnresponsive: () => false,
-      isPresenceAvailable: () => true,
+      getPresenceAvailability: () => true,
       isPermanentError: () => false,
       log: { debug() {}, warn() {} },
       retryBaseMs: 30,

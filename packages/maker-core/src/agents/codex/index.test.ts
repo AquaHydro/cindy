@@ -9,6 +9,7 @@ import { Method } from './app-server/protocol.js';
 import type { ThreadEventHandlers } from './app-server/host.js';
 import {
   CodexResumePreparationBlockedError,
+  AgentNotAuthenticatedError,
   type AgentDeps,
   type AgentSessionHandle,
   type TurnPermissionPolicy,
@@ -17024,6 +17025,87 @@ describe('CodexAgent MCP thread context hooks', () => {
     }
   });
 
+  it.each([0, 10])('keeps output paired through input-only usage (cached=%s) and resets next turn', async (cachedInputTokens) => {
+    let now = 1_000;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    const agent = new CodexAgent(createDeps());
+    let turnSeq = 0;
+    const host = installFakeHost(agent, (method) => {
+      if (method === Method.TurnStart) return { turn: { id: `turn-${++turnSeq}` } };
+      if (method === Method.TurnInterrupt) return {};
+      return undefined;
+    });
+    const handle = await agent.startSession({
+      sessionId: 'session-paired-generation-sample', model: 'gpt-5.4', workingDir: '/repo',
+    });
+    try {
+      const handlers = host.getThreadHandlers()!;
+      const events: AgentEvent[] = [];
+      void (async () => {
+        for await (const event of handle.events()) events.push(event);
+      })();
+      await handle.send({ type: 'user', content: 'two requests' });
+      handlers.turnStarted!({ threadId: 'start-thread-id', turn: { id: 'turn-1' } });
+      now = 2_000;
+      handlers.tokenUsageUpdated!({
+        threadId: 'start-thread-id', turnId: 'turn-1', tokenUsage: {
+          total: { totalTokens: 110, inputTokens: 10, outputTokens: 100, cachedInputTokens: 0 },
+          last: { inputTokens: 10, outputTokens: 100, cachedInputTokens: 0 },
+        },
+      });
+      const expectSample = (outputTokens: number, generationDurationMs: number) =>
+        expect(handle.getUsageSnapshot()).toMatchObject({
+          outputTokens, generationDurationMs, generationReliable: true,
+        });
+      expectSample(100, 1_000);
+      const tool = { id: 'tool-1', type: 'mcpToolCall', server: 'test', tool: 'read', arguments: {} };
+      handlers.itemStarted!({ threadId: 'start-thread-id', turnId: 'turn-1', item: tool });
+      now = 6_000;
+      handlers.itemCompleted!({ threadId: 'start-thread-id', turnId: 'turn-1', item: tool });
+      now = 10_000;
+      handlers.itemStarted!({ threadId: 'start-thread-id', turnId: 'turn-1',
+        item: { id: 'reasoning-2', type: 'reasoning', summary: [], content: [] } });
+      // No second usage yet: 100 / 1s, never 100 / 5s.
+      expectSample(100, 1_000);
+      handlers.tokenUsageUpdated!({
+        threadId: 'start-thread-id', turnId: 'turn-1', tokenUsage: {
+          total: { totalTokens: 120, inputTokens: 20, outputTokens: 100, cachedInputTokens },
+          last: { inputTokens: 10, outputTokens: 0, cachedInputTokens },
+        },
+      });
+      expectSample(100, 1_000);
+      expect(handle.getUsageSnapshot().tokenUsage).toBe(120 - cachedInputTokens);
+      handlers.tokenUsageUpdated!({
+        threadId: 'start-thread-id', turnId: 'turn-1', tokenUsage: {
+          total: { totalTokens: 530, inputTokens: 30, outputTokens: 500, cachedInputTokens },
+          last: { inputTokens: 10, outputTokens: 400, cachedInputTokens: 0 },
+        },
+      });
+      expectSample(500, 5_000);
+      now = 11_000;
+      handlers.tokenUsageUpdated!({
+        threadId: 'start-thread-id', turnId: 'turn-1', tokenUsage: {
+          total: { totalTokens: 540, inputTokens: 40, outputTokens: 500, cachedInputTokens },
+          last: { inputTokens: 10, outputTokens: 0, cachedInputTokens: 0 },
+        },
+      });
+      expectSample(500, 5_000);
+      expect(handle.getUsageSnapshot().tokenUsage).toBe(540 - cachedInputTokens);
+      handlers.turnCompleted!({ threadId: 'start-thread-id', turn: { id: 'turn-1', status: 'completed' } });
+      await waitForExpectation(() => expect(events.some((event) => event.type === 'done')).toBe(true));
+      expect(events.find((event) => event.type === 'done')?.data.usage.durationMs).toBe(5_000);
+      expect(events.filter((event) => event.type === 'status').at(-1)?.data).toMatchObject({
+        status: 'Done', outputTokens: 500, generationDurationMs: 5_000,
+      });
+      await handle.send({ type: 'user', content: 'next turn' });
+      expect(handle.getUsageSnapshot().outputTokens).toBe(0);
+      expect(handle.getUsageSnapshot()).not.toHaveProperty('generationDurationMs');
+    } finally {
+      await handle.close();
+      nowSpy.mockRestore();
+    }
+  });
+
   it('attaches throttled token usage to the Done snapshot without an extra running frame', async () => {
     let now = 1_000;
     const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => now);
@@ -17083,7 +17165,7 @@ describe('CodexAgent MCP thread context hooks', () => {
       expect(doneStatus?.data).toMatchObject({
         isRunning: false,
         outputTokens: 40,
-        generationDurationMs: 250,
+        generationDurationMs: 150,
       });
 
       await handle.close();
@@ -17092,7 +17174,7 @@ describe('CodexAgent MCP thread context hooks', () => {
     }
   });
 
-  it('emits only monotonic request segments and keeps reasoning as a non-additive detail', async () => {
+  it.each([undefined, 20_000])('emits monotonic segments with cache-write subset %s and non-additive reasoning', async (cacheWriteInputTokens) => {
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent);
     const handle = await agent.startSession({
@@ -17118,6 +17200,7 @@ describe('CodexAgent MCP thread context hooks', () => {
           totalTokens: 60_007,
           inputTokens: 60_000,
           cachedInputTokens: 10_000,
+          cacheWriteInputTokens,
           outputTokens: 7,
           reasoningOutputTokens: 3,
         },
@@ -17125,6 +17208,7 @@ describe('CodexAgent MCP thread context hooks', () => {
           totalTokens: 60_007,
           inputTokens: 60_000,
           cachedInputTokens: 10_000,
+          cacheWriteInputTokens,
           outputTokens: 7,
           reasoningOutputTokens: 3,
         },
@@ -17170,16 +17254,16 @@ describe('CodexAgent MCP thread context hooks', () => {
 
     const done = events.find((event) => event.type === 'done');
     expect((done?.data as { usage?: unknown }).usage).toMatchObject({
-      promptTokens: 100_000,
+      promptTokens: 100_000 - (cacheWriteInputTokens ?? 0),
       completionTokens: 11,
       reasoningTokens: 5,
       cachedTokens: 15_000,
       segments: [
         {
-          inputTokens: 50_000,
+          inputTokens: 50_000 - (cacheWriteInputTokens ?? 0),
           outputTokens: 7,
           cacheReadTokens: 10_000,
-          cacheCreateTokens: 0,
+          cacheCreateTokens: cacheWriteInputTokens ?? 0,
           reasoningTokens: 3,
         },
         {
@@ -21872,92 +21956,85 @@ describe('CodexAgent.forkSdkSession', () => {
     }));
   });
 
-  it('forks from a temporary rollout copy without unsafe payload lines', async () => {
-    const agent = new CodexAgent(createDeps());
-    let copied = '';
-    const host = installFakeHost(agent, async (method, params) => {
-      if (method !== Method.ThreadFork) return undefined;
-      const forkPath = (params as { path?: string }).path;
-      if (forkPath) copied = await fs.readFile(forkPath, 'utf8');
-      return undefined;
-    });
-    const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'xdt-codex-home-'));
+  it('inspects indexed source history without requiring the outgoing provider credentials', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-source-auth-recovery-'));
     try {
+      const source = path.join(dir, 'source.jsonl');
+      await fs.writeFile(source, JSON.stringify({ ordinal: 0, type: 'session_meta', payload: { id: 'old-thread' } }) + '\n');
+      const prepareCodexResumeSession = vi.fn(async () => source);
+      const agent = new CodexAgent(createDeps({}, { prepareCodexResumeSession }));
+      const getHost = vi.spyOn(agent as any, 'getHost').mockRejectedValue(new AgentNotAuthenticatedError('codex', 'old gateway credentials unavailable'));
+      await expect(agent.forkSdkSession({ sourceSdkSessionId: 'old-thread', upToMessageId: undefined, stripEncryptedReasoning: true })).rejects.toMatchObject({ code: 'CODEX_HISTORY_RECOVERY_REQUIRED' });
+      expect(getHost).not.toHaveBeenCalled();
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  });
+
+  it.each([false, true])('only an outgoing sanitizing fork can recover missing source auth (strip=%s)', async (strip) => {
+    const agent = new CodexAgent(createDeps());
+    vi.spyOn(agent as any, 'getHost').mockRejectedValue(new AgentNotAuthenticatedError('codex', 'old credentials unavailable'));
+    const result = agent.forkSdkSession({ sourceSdkSessionId: 'old-thread', upToMessageId: undefined, stripEncryptedReasoning: strip });
+    if (strip) await expect(result).rejects.toMatchObject({ code: 'CODEX_HISTORY_RECOVERY_REQUIRED' });
+    else await expect(result).rejects.toBeInstanceOf(AgentNotAuthenticatedError);
+  });
+
+  it.each([false, true])('requests Cindy recovery before forking indexed history (lazy=%s)', async (lazy) => {
+    const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'cindy-indexed-fork-'));
+    try {
+      const agent = new CodexAgent(createDeps());
       (agent as unknown as { codexHome: string }).codexHome = codexHome;
-      const sessionsDir = path.join(codexHome, 'sessions', '2026', '06', '11');
-      await fs.mkdir(sessionsDir, { recursive: true });
-      const sourceRollout = path.join(sessionsDir, 'rollout-2026-06-11-source-thread-id.jsonl');
-      await fs.writeFile(
-        sourceRollout,
-        `${[
-          JSON.stringify({ payload: { type: 'message', role: 'user' } }),
-          JSON.stringify({ payload: { type: 'reasoning', encrypted_content: 'gAAA' } }),
-          JSON.stringify({ type: 'event_msg', payload: { type: 'image_generation_end', call_id: 'ig_1', result: 'data:image/png;base64,xxx' } }),
-          JSON.stringify({ type: 'response_item', payload: { type: 'image_generation_call', id: 'ig_1', result: 'data:image/png;base64,xxx' } }),
-          JSON.stringify({ payload: { type: 'message', role: 'assistant' } }),
-        ].join('\n')}\n`,
-        'utf8',
-      );
-
-      const result = await agent.forkSdkSession({
-        sourceSdkSessionId: 'source-thread-id',
-        upToMessageId: undefined,
-        stripEncryptedReasoning: true,
-      });
-
-      expect(result.newSdkSessionId).toBe('fork-thread-id');
-      const forkParams = host.request.mock.calls[0]?.[1] as { path?: string };
-      expect(forkParams.path).toBeTruthy();
-      expect(copied).toContain('"message"');
-      expect(copied).toContain('"image_generation_call"');
-      expect(copied).toContain('"ig_1"');
-      expect(copied).not.toContain('"reasoning"');
-      expect(copied).not.toContain('encrypted_content');
-      expect(copied).not.toContain('"image_generation_end"');
-      expect(copied).not.toContain('"call_id"');
+      const dir = path.join(codexHome, 'sessions', '2026', '09', '05');
+      await fs.mkdir(dir, { recursive: true });
+      const source = path.join(dir, 'rollout-source-thread-id.jsonl');
+      const original = JSON.stringify({ ordinal: 0, type: 'session_meta', payload: {
+        id: 'source-thread-id', ...(lazy ? { history_base: { thread_id: 'parent' } } : {}),
+      } }) + '\n';
+      await fs.writeFile(source, original);
+      const host = installFakeHost(agent);
+      await expect(agent.forkSdkSession({
+        sourceSdkSessionId: 'source-thread-id', upToMessageId: undefined, stripEncryptedReasoning: true,
+      })).rejects.toMatchObject({ code: 'CODEX_HISTORY_RECOVERY_REQUIRED' });
+      expect(host.request).not.toHaveBeenCalledWith(Method.ThreadFork, expect.anything());
+      expect(await fs.readFile(source, 'utf8')).toBe(original);
+      expect(await fs.readdir(dir)).toEqual(['rollout-source-thread-id.jsonl']);
     } finally {
       await fs.rm(codexHome, { recursive: true, force: true });
     }
   });
 
-  it('rewrites oversized tool-output images in the stripped fork copy', async () => {
-    const agent = new CodexAgent(createDeps());
-    let copied = '';
-    installFakeHost(agent, async (method, params) => {
-      if (method !== Method.ThreadFork) return undefined;
-      const forkPath = (params as { path?: string }).path;
-      if (forkPath) copied = await fs.readFile(forkPath, 'utf8');
-      return undefined;
-    });
+  it('rewrites oversized tool-output images in the forked child', async () => {
     const codexHome = await fs.mkdtemp(path.join(os.tmpdir(), 'xdt-codex-home-'));
     try {
+      const agent = new CodexAgent(createDeps());
       (agent as unknown as { codexHome: string }).codexHome = codexHome;
       const sessionsDir = path.join(codexHome, 'sessions', '2026', '08', '26');
       await fs.mkdir(sessionsDir, { recursive: true });
       const sourceRollout = path.join(sessionsDir, 'rollout-2026-08-26-source-thread-id.jsonl');
+      const childRollout = path.join(sessionsDir, 'rollout-2026-08-26-fork-thread-id.jsonl');
       const huge = `data:image/png;base64,${'A'.repeat(64 * 1024)}`;
-      await fs.writeFile(
-        sourceRollout,
-        `${[
-          JSON.stringify({ payload: { type: 'message', role: 'user' } }),
-          JSON.stringify({ payload: { type: 'custom_tool_call_output', call_id: 'shot', output: huge } }),
-        ].join('\n')}\n`,
-        'utf8',
-      );
+      const rolloutText = `${[
+        JSON.stringify({ payload: { type: 'message', role: 'user' } }),
+        JSON.stringify({ payload: { type: 'custom_tool_call_output', call_id: 'shot', output: huge } }),
+      ].join('\n')}\n`;
+      await fs.writeFile(sourceRollout, rolloutText, 'utf8');
+      installFakeHost(agent, async (method) => {
+        if (method === Method.ThreadFork) await fs.writeFile(childRollout, rolloutText, 'utf8');
+        return undefined;
+      });
       await agent.forkSdkSession({
         sourceSdkSessionId: 'source-thread-id',
         upToMessageId: undefined,
         stripEncryptedReasoning: true,
       });
-      expect(copied).toContain('"shot"');
-      expect(copied).toContain('cindy-omitted-inline-image');
-      expect(copied).not.toContain(';base64,');
+      const child = await fs.readFile(childRollout, 'utf8');
+      expect(child).toContain('"shot"');
+      expect(child).toContain('cindy-omitted-inline-image');
+      expect(child).not.toContain(';base64,');
     } finally {
       await fs.rm(codexHome, { recursive: true, force: true });
     }
   });
 
-  it('uses the rollout path returned by imported-thread preparation when stripping', async () => {
+  it('prepares an imported source before forking and sanitizes its local child', async () => {
     const externalHome = await fs.mkdtemp(path.join(os.tmpdir(), 'xdt-codex-external-'));
     const sourceRollout = path.join(externalHome, 'rollout-imported-thread.jsonl');
     await fs.writeFile(sourceRollout, [
@@ -21968,28 +22045,31 @@ describe('CodexAgent.forkSdkSession', () => {
     try {
       const prepareCodexResumeSession = vi.fn(async () => sourceRollout);
       const agent = new CodexAgent(createDeps({}, { prepareCodexResumeSession }));
-      let copied = '';
+      const codexHome = path.join(externalHome, 'codex-home');
+      const sessionsDir = path.join(codexHome, 'sessions', '2026', '09', '04');
+      const childRollout = path.join(sessionsDir, 'rollout-2026-09-04-fork-thread-id.jsonl');
+      await fs.mkdir(sessionsDir, { recursive: true });
       const host = installFakeHost(agent, async (method, params) => {
         if (method === Method.ThreadFork) {
-          const forkPath = (params as { path?: string }).path;
-          if (forkPath) copied = await fs.readFile(forkPath, 'utf8');
+          expect(params).not.toHaveProperty('path');
+          await fs.copyFile(sourceRollout, childRollout);
         }
         return undefined;
       });
-      // The normal CODEX_HOME scan cannot see the external path; the prepared
-      // path must still be used for the stripped fork.
-      (agent as unknown as { codexHome: string }).codexHome = path.join(externalHome, 'empty-home');
+      (agent as unknown as { codexHome: string }).codexHome = codexHome;
       await agent.forkSdkSession({
         sourceSdkSessionId: 'imported-thread',
         upToMessageId: undefined,
         stripEncryptedReasoning: true,
       });
       expect(prepareCodexResumeSession).toHaveBeenCalledWith('imported-thread');
-      expect(copied).toContain('"message"');
-      expect(copied).not.toContain('encrypted_content');
-      expect(host.request).toHaveBeenCalledWith(Method.ThreadFork, expect.objectContaining({
-        path: expect.any(String),
-      }));
+      const child = await fs.readFile(childRollout, 'utf8');
+      expect(child).toContain('"message"');
+      expect(child).not.toContain('encrypted_content');
+      expect(host.request).toHaveBeenCalledWith(
+        Method.ThreadFork,
+        expect.not.objectContaining({ path: expect.any(String) }),
+      );
     } finally {
       await fs.rm(externalHome, { recursive: true, force: true });
     }

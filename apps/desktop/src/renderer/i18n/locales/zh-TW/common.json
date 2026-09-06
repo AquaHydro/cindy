@@ -2,6 +2,13 @@
   "ipcError": {
     "INVALID_PARAMS": "引數無效，請檢查後重試。",
     "PRECONDITION_FAILED": "目前狀態下無法執行此操作，請稍後再試。",
+    "MODEL_CONTEXT_USAGE_UNKNOWN": "模型未切換：無法確認目前任務已使用的上下文。請保留目前模型，或新增任務後再選擇",
+    "MODEL_WINDOW_CURRENT_CONTEXT_UNKNOWN": "模型未切換：無法確認目前模型的上下文視窗。請檢查自訂模型的視窗設定；若無法修改，請保留目前模型或新增任務",
+    "MODEL_WINDOW_TARGET_CONTEXT_UNKNOWN": "模型未切換：無法確認目標模型的上下文視窗。請檢查自訂模型的視窗設定；若無法修改，請選擇其他模型或新增任務",
+    "MODEL_WINDOW_REMOTE_REBUILD_UNSUPPORTED": "模型未切換：遠端任務無法為較小的上下文視窗安全整理上下文。請保留目前模型，或新增任務後選擇目標模型",
+    "MODEL_WINDOW_PROTECTION_UNAVAILABLE": "模型未切換：上下文保護功能暫時無法使用。請保留目前模型，或新增任務後再選擇",
+    "MODEL_SWITCH_TASK_RUNNING": "模型未切換：目前任務仍在執行。請等待本次回覆結束後再試",
+    "MODEL_WINDOW_PREPARATION_IN_PROGRESS": "模型未切換：正在整理目前任務的上下文。請等待完成後再試",
     "SESSION_RUNNING": "當前任務正在執行，請稍後再試。",
     "PI_IMAGE_INPUT_UNSUPPORTED": "當前 Pi 模型未啟用圖片輸入。請切換到支援圖片的模型；如果這是自定義模型，請在供應商設定中開啟“支援圖片輸入”，然後新建 Pi 任務。",
     "CREDENTIAL_SWITCH_BUSY": "Codex 正在其它任務中執行，本次來源切換未生效（本任務仍使用原來源）。等它結束後再試。",
@@ -787,6 +794,7 @@
       "appVersionLabel": "應用版本號",
       "claudeCodeVersionLabel": "Claude Code 版本號",
       "codexVersionLabel": "Codex 版本號",
+      "piVersionLabel": "Pi 版本號",
       "logsDirLabel": "日誌目錄",
       "openLogsDir": "開啟",
       "openLogsDirTooltip": "在系統檔案管理器中開啟日誌目錄",
@@ -4827,7 +4835,7 @@
         "fsWrite": "可寫入檔案(建立/修改)",
         "fsWriteDetail": "它自己的專屬資料目錄隨時可寫；當前任務的工作目錄跟隨任務的權限模式(免批模式直接寫，逐條確認模式先徵求你同意)；其它目錄每次都需要你確認。檔案始終由主機代寫，插件本身無法直接訪問你的檔案系統。",
         "libraryPersist": "可使用持久作品庫(大量檔案與資料庫)",
-        "libraryPersistDetail": "它會取得一個由 Cindy 管理的獨立儲存區，用來保存你的作品資料(如畫布、圖片、資料庫)，不受一般插件資料配額限制。檔案與資料庫操作全部由主機代執行，插件只能使用庫內相對路徑，無法觸碰你的其它檔案。它還可以讓 Cindy 在系統資料夾中顯示庫內檔案，或彈出系統另存為視窗由你選擇拷貝位置；取消則不會拷出任何檔案。解除安裝插件不會刪除這些資料；刪除必須在 Cindy 設定中單獨確認。",
+        "libraryPersistDetail": "它會取得一個由 Cindy 管理的獨立儲存區，用來保存你的作品資料(如畫布、圖片、資料庫)，不受一般插件資料配額限制。檔案與資料庫操作全部由主機代執行，插件只能使用庫內相對路徑，無法觸碰你的其它檔案。它還可以讓 Cindy 在系統資料夾中顯示庫內檔案，或彈出系統另存為視窗由你選擇拷貝位置；取消則不會拷出任何檔案。它還可以把 PNG 點陣圖寫入系統剪貼簿；沒有確認框，會覆蓋目前剪貼簿內容。解除安裝插件不會刪除這些資料；刪除必須在 Cindy 設定中單獨確認。",
         "networkHost": "訪問網路域名 {{host}}",
         "networkSecret": "需要你提供憑證「{{name}}」",
         "networkSecretGhostInputDetail": "憑證由這個插件自己的設定介面收集，錄入時會經過插件頁面；隨後一次性交給主機加密保管，存入後插件無法讀回，主機只在請求它宣告的域名時注入。",
@@ -7179,6 +7187,7 @@
         "discountedVsStandard": "折扣中，較標準價省 {{percent}}%"
       },
       "trigger": {
+        "currentAndNext": "目前：{{current}}\n下一則訊息：{{next}}",
         "placeholder": "選擇模型",
         "aria": "選擇模型。當前：{{model}}",
         "ariaWithEffort": "選擇模型。當前：{{model}}，推理強度：{{effort}}",
@@ -7221,6 +7230,9 @@
         "fastBadge": "快速"
       },
       "source": {
+        "unavailable": "模型無法使用",
+        "reconnect": "重新連線",
+        "manage": "管理來源",
         "railLabel": "來源",
         "connect": "新增模型",
         "connectCta": "連線來源 →",
@@ -7237,10 +7249,6 @@
         "railAll": "全部",
         "favoritesGroup": "收藏",
         "favoritesEmpty": "還沒有收藏——把滑鼠停到模型列上，點 ☆ 存到這裡",
-        "layoutBadge": "試用樣式B",
-        "layoutClassic": "切回樣式A",
-        "layoutTryUnified": "試用新選擇器",
-        "layoutOriginal": "切回舊版",
         "addFavorite": "存為收藏",
         "customize": "自訂",
         "removeFavorite": "取消收藏",
@@ -7463,6 +7471,11 @@
       },
       "remoteSwitchFailed": "遠端設定切換失敗，未生效",
       "switchFailed": "設定切換失敗，未生效",
+      "modelWindowUnknown": {
+        "custom": "模型未切換：目標模型「{{model}}」缺少上下文視窗資訊。請在「{{provider}}」的模型設定中補充後重試。",
+        "builtin": "模型未切換：無法確認目標模型「{{model}}」的上下文視窗。請重新整理「{{provider}}」的模型列表；若仍失敗，請重新連接該供應商。",
+        "openSettings": "前往設定"
+      },
       "permissionSwitchFailed": "權限模式切換失敗，已保留原設定",
       "fullAccessConfirmation": {
         "title": "開啟 Full access？",
@@ -7827,6 +7840,7 @@
     },
     "runningStatus": {
       "tokenRate": "{{rate}} tok/s",
+      "tokenRateDescription": "本輪主 Agent 的平均生成速度，含思考，排除工具執行與審批等待。隨用量回報更新；旁邊顯示本輪總耗時。",
       "tokenCount": "{{tokens}} tok"
     },
     "shareImage": {
@@ -8569,6 +8583,8 @@
       "runningTool": "{{tool}} 執行中…"
     },
     "remoteSession": {
+      "syncing": "正在同步…",
+      "recovered": "已恢復",
       "reconnecting": "與被控裝置的連線中斷，正在重連…",
       "hostOffline": "被控裝置已離線，暫時無法同步",
       "degraded": "與被控裝置的連線不穩定，正在自動重試…",
