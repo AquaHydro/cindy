@@ -47,11 +47,16 @@ export class CodexForkError extends Error {
       if ("name" in error) signals.push(String(error.name));
       if ("code" in error) signals.push(String(error.code));
       if ("status" in error) signals.push(`HTTP ${String(error.status)}`);
+      if ("statusCode" in error)
+        signals.push(`HTTP ${String(error.statusCode)}`);
       error = "cause" in error ? error.cause : undefined;
     }
     const text = signals.join("\n");
     if (
-      /\b(?:401|403|unauthorized|forbidden|authentication|abort(?:ed|error|_err)?|cancel(?:led|ed)?)\b/i.test(
+      /\b(?:HTTP(?:\/\d(?:\.\d)?)?|status(?: code)?)\s*[:=]?\s*40[13]\b/i.test(
+        text,
+      ) ||
+      /\b(?:unauthorized|forbidden|authentication|abort(?:ed|error|_err)?|cancel(?:led|ed)?)\b/i.test(
         text,
       )
     )
