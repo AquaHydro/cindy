@@ -126,8 +126,11 @@ const PI_ANTHROPIC_PROXY_KEY_ENV = 'CINDY_PI_ANTHROPIC_PROXY_KEY';
  * Claude 订阅占位 token。Pi 的 anthropic 适配器按 `apiKey.includes('sk-ant-oat')` 判定
  * OAuth 形态,命中后才走原生订阅请求构造:Bearer 鉴权、`claude-code-20250219,oauth-2025-04-20`
  * 加各 beta(fine-grained tool streaming / server-side fallback 等)、Claude Code 身份 system
- * 段与 `claude-cli` UA。真 token 由 loopback proxy 按 session 覆盖 `authorization`,
- * 占位值绝不出本机。用普通字串会让 Pi 按 x-api-key 形态发请求,proxy 再补 beta 头就会
+ * 段与 `claude-cli` UA。占位值本身不含授权能力;真 token 由 loopback proxy 在解析出
+ * anthropic provider 路由时覆盖 `authorization`,故该路由是占位值被换掉的唯一保证 ——
+ * 请求带 provider 头就必须钉在该路由上,不能落回默认上游(见
+ * anthropic-compat-proxy-host 的 piProviderId 钉住分支)。
+ * 用普通字串会让 Pi 按 x-api-key 形态发请求,proxy 再补 beta 头就会
  * 与 body 里 Pi 已注入的 `fallbacks` 等字段脱节(400 `fallbacks: Extra inputs are not permitted`)。
  */
 const PI_ANTHROPIC_PROXY_PLACEHOLDER_TOKEN = 'sk-ant-oat01-cindy-pi-proxy-placeholder';

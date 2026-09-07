@@ -606,6 +606,45 @@ describe('pi routingTransform — xdt session header selects the Pi provider rou
   });
 
   it.each([
+    ['sk-gw'],
+    [null],
+  ])(
+    'pins an Anthropic Pi request to the subscription route when the session holds no explicit source (gateway key %s)',
+    async (gatewayKey) => {
+      // model-only set_model 与老会话 hydrate 都会让 session store 为空,而 Pi 已经跑在
+      // anthropic 原生 provider 上。掉回 ② 段默认路由 = 有网关 key 时静默改走网关计费,
+      // 无网关 key 时把 `sk-ant-oat` 占位 token 直发 api.anthropic.com。
+      setClaudeProxyGatewayKeyReader(() => gatewayKey);
+      setProviderOAuthTokenReader((providerId, agent) =>
+        providerId === 'anthropic' && agent === 'pi' ? Promise.resolve('pi-claude-token') : null,
+      );
+      registerPiProxySession('sess-pi', 'session-secret', () => 'anthropic');
+      const decision = createModelRoutingTransform()(
+        { model: 'claude-opus-5' },
+        ctxWith({
+          'x-cindy-pi-session-id': 'sess-pi',
+          'x-cindy-pi-session-token': 'session-secret',
+          'x-cindy-pi-provider-id': 'anthropic',
+          authorization: 'Bearer sk-ant-oat01-cindy-pi-proxy-placeholder',
+        }),
+      );
+      await expect(Promise.resolve(decision)).resolves.toEqual({
+        upstreamOverride: 'https://api.anthropic.com',
+        headerOverride: {
+          'anthropic-version': '2023-06-01',
+          authorization: 'Bearer pi-claude-token',
+        },
+        headerDelete: [
+          'x-api-key',
+          'x-cindy-pi-session-id',
+          'x-cindy-pi-session-token',
+          'x-cindy-pi-provider-id',
+        ],
+      });
+    },
+  );
+
+  it.each([
     ['/v1/messages', { 'x-api-key': 'sk-gw', authorization: 'Bearer sk-gw' }],
     ['/v1/responses', { authorization: 'Bearer sk-gw' }],
     ['/v1/chat/completions', { authorization: 'Bearer sk-gw' }],
