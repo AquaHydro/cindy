@@ -22340,14 +22340,14 @@ describe('CodexAgent native fork anchor events', () => {
 });
 
 describe('CodexAgent.forkSdkSession', () => {
-  it('keeps a startup cause but disables retry when host retirement also fails', async () => {
+  it('keeps a startup cause and records a concurrent host retirement failure', async () => {
     const cause = new Error('ECONNRESET');
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent);
     host.ensureStarted.mockRejectedValueOnce(cause);
     vi.spyOn(agent as any, 'retireHostKey').mockRejectedValue(new Error('shutdown failed'));
     await expect(agent.forkSdkSession({ sourceSdkSessionId: 'source', upToMessageId: undefined }))
-      .rejects.toMatchObject({ stage: 'host-start', cause, cleanupFailed: true, retryable: false });
+      .rejects.toMatchObject({ stage: 'host-start', cause, cleanupFailed: true });
     expect(host.request).not.toHaveBeenCalled();
   });
 
@@ -22370,19 +22370,19 @@ describe('CodexAgent.forkSdkSession', () => {
     const retire = vi.spyOn(agent as any, 'retireHostKey').mockResolvedValue(undefined);
     const error = await agent.forkSdkSession({ sourceSdkSessionId: 'source', upToMessageId: undefined }).catch(e => e);
     expect(error).toBeInstanceOf(CodexForkError);
-    expect(error).toMatchObject({ stage: 'host-start', cause, retryable: true });
+    expect(error).toMatchObject({ stage: 'host-start', cause });
     expect(host.request).not.toHaveBeenCalled();
     expect(retire).toHaveBeenCalledOnce();
   });
 
-  it('does not classify a lost fork response as safe to replay', async () => {
+  it('preserves the phase and cause of a lost fork response', async () => {
     const cause = new Error('request timeout ETIMEDOUT');
     const agent = new CodexAgent(createDeps());
     const host = installFakeHost(agent, method => {
       if (method === Method.ThreadFork) throw cause;
     });
     await expect(agent.forkSdkSession({ sourceSdkSessionId: 'source', upToMessageId: undefined }))
-      .rejects.toMatchObject({ stage: 'thread-fork', cause, retryable: false });
+      .rejects.toMatchObject({ stage: 'thread-fork', cause });
     expect(host.request).toHaveBeenCalledOnce();
   });
 
@@ -22395,7 +22395,7 @@ describe('CodexAgent.forkSdkSession', () => {
     host.unsubscribeThread.mockRejectedValue(new Error('cleanup EPIPE'));
     const retire = vi.spyOn(agent as any, 'retireHostKey').mockResolvedValue(undefined);
     await expect(agent.forkSdkSession({ sourceSdkSessionId: 'source', upToMessageId: undefined, tailTurnsToDrop: 1 }))
-      .rejects.toMatchObject({ stage: 'thread-rollback', cause, retryable: false });
+      .rejects.toMatchObject({ stage: 'thread-rollback', cause, cleanupFailed: true });
     expect(host.unsubscribeThread).toHaveBeenCalledOnce();
     expect(retire).toHaveBeenCalledOnce();
   });

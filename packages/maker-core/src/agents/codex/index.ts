@@ -13745,7 +13745,7 @@ export class CodexAgent extends BaseAgent {
       try {
         await cleanupCreatedThreads();
       } catch (error) {
-        // A cleanup failure must never replace the primary failure (or authorize a retry).
+        // A cleanup failure must never replace the primary failure.
         if (!operationFailed) throw new CodexForkError('child-cleanup', error);
         if (forkFailure) forkFailure.cleanupFailed = true;
       } finally {

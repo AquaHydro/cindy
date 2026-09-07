@@ -8,7 +8,6 @@ export type {
 } from './claude-code/subagent-model-access.js';
 export { CodexAgent } from './codex/index.js';
 export { isCodexHistoryRecoveryRequired } from './codex/history-recovery.js';
-export { CodexForkError } from './codex/fork-error.js';
 export {
   CODEX_HISTORY_OVERSIZED_REASON,
   CODEX_LIVE_TAIL_OVERSIZED_BYTES,
