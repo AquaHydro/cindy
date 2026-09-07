@@ -121,6 +121,16 @@ const PI_SESSION_ID_ENV = 'CINDY_PI_SESSION_ID';
 const PI_SESSION_TOKEN_ENV = 'CINDY_PI_SESSION_TOKEN';
 const PI_PROVIDER_AUTH_PLACEHOLDER_KEY = 'cindy-pi-provider-auth-placeholder';
 const PI_OPENAI_PROXY_KEY_ENV = 'CINDY_PI_OPENAI_PROXY_KEY';
+const PI_ANTHROPIC_PROXY_KEY_ENV = 'CINDY_PI_ANTHROPIC_PROXY_KEY';
+/**
+ * Claude 订阅占位 token。Pi 的 anthropic 适配器按 `apiKey.includes('sk-ant-oat')` 判定
+ * OAuth 形态,命中后才走原生订阅请求构造:Bearer 鉴权、`claude-code-20250219,oauth-2025-04-20`
+ * 加各 beta(fine-grained tool streaming / server-side fallback 等)、Claude Code 身份 system
+ * 段与 `claude-cli` UA。真 token 由 loopback proxy 按 session 覆盖 `authorization`,
+ * 占位值绝不出本机。用普通字串会让 Pi 按 x-api-key 形态发请求,proxy 再补 beta 头就会
+ * 与 body 里 Pi 已注入的 `fallbacks` 等字段脱节(400 `fallbacks: Extra inputs are not permitted`)。
+ */
+const PI_ANTHROPIC_PROXY_PLACEHOLDER_TOKEN = 'sk-ant-oat01-cindy-pi-proxy-placeholder';
 const PI_PROVIDER_HEADER = 'x-cindy-pi-provider-id';
 
 export interface PiBundledModelInfo {
@@ -544,6 +554,7 @@ export function buildPiSubscriptionNativeProviders(
   const env: Record<string, string> = {
     [PI_OPENAI_PROXY_KEY_ENV]: piOpenaiProxyPlaceholderJwt(),
     [PI_XAI_PROXY_API_KEY_ENV]: PI_PROVIDER_AUTH_PLACEHOLDER_KEY,
+    [PI_ANTHROPIC_PROXY_KEY_ENV]: PI_ANTHROPIC_PROXY_PLACEHOLDER_TOKEN,
   };
   const add = (
     sourceProviderId: 'anthropic' | 'openai' | 'xai',
@@ -606,6 +617,7 @@ export function buildPiSubscriptionNativeProviders(
       name,
       baseUrl,
       inheritModels: true,
+      ...(sourceProviderId === 'anthropic' ? { apiKeyEnvVar: PI_ANTHROPIC_PROXY_KEY_ENV } : {}),
       ...(sourceProviderId === 'openai' ? { apiKeyEnvVar: PI_OPENAI_PROXY_KEY_ENV } : {}),
       ...(sourceProviderId === 'xai' ? { apiKeyEnvVar: PI_XAI_PROXY_API_KEY_ENV } : {}),
       modelIdAliases,

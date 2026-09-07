@@ -521,7 +521,6 @@ describe('pi routingTransform — xdt session header selects the Pi provider rou
       upstreamOverride: 'https://api.anthropic.com',
       headerOverride: {
         'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'oauth-2025-04-20',
         authorization: 'Bearer pi-claude-token',
       },
       headerDelete: [
@@ -643,7 +642,6 @@ describe('pi routingTransform — xdt session header selects the Pi provider rou
       upstreamOverride: 'https://api.anthropic.com',
       headerOverride: {
         'anthropic-version': '2023-06-01',
-        'anthropic-beta': 'oauth-2025-04-20',
         authorization: 'Bearer pi-claude-token',
       },
       headerDelete: [
