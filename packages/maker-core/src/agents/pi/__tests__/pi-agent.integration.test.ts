@@ -767,7 +767,7 @@ describe.skipIf(!piAvailable)('PiAgent integration (real pi binary + fake gatewa
           },
           models: [{ id: 'claude-opus-5', wireId: 'claude-opus-5' }],
         }],
-        env: { CINDY_PI_ANTHROPIC_PROXY_KEY: 'sk-ant-oat01-cindy-pi-proxy-placeholder' },
+        env: { CINDY_PI_ANTHROPIC_PROXY_KEY: 'sk-ant-oat01' },
       });
       const workingDir = mkdtempSync(path.join(tmpdir(), 'pi-agent-native-anthropic-cwd-'));
       let handle: AgentSessionHandle | null = null;
@@ -797,7 +797,7 @@ describe.skipIf(!piAvailable)('PiAgent integration (real pi binary + fake gatewa
           }),
         ]));
         const request = seenRequests.slice(requestsBefore).find((item) => item.providerId === 'anthropic')!;
-        expect(request.headers.authorization).toBe('Bearer sk-ant-oat01-cindy-pi-proxy-placeholder');
+        expect(request.headers.authorization).toBe('Bearer sk-ant-oat01');
         expect(request.headers['x-api-key']).toBeUndefined();
         expect(request.headers['user-agent']).toMatch(/^claude-cli\//);
         expect(String(request.headers['anthropic-beta']).split(',')).toEqual(expect.arrayContaining([

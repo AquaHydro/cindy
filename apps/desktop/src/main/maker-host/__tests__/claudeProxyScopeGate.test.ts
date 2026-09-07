@@ -504,7 +504,7 @@ describe('pi routingTransform — xdt session header selects the Pi provider rou
   });
 
   it('preserves Pi OAuth betas and fallbacks on the final upstream request while replacing placeholder auth', async () => {
-    const placeholder = 'sk-ant-oat01-cindy-pi-proxy-placeholder';
+    const placeholder = 'sk-ant-oat01';
     const beta = 'claude-code-20250219,oauth-2025-04-20,server-side-fallback-2026-07-01';
     const body = {
       model: 'claude-opus-5',
@@ -625,7 +625,7 @@ describe('pi routingTransform — xdt session header selects the Pi provider rou
           'x-cindy-pi-session-id': 'sess-pi',
           'x-cindy-pi-session-token': 'session-secret',
           'x-cindy-pi-provider-id': 'anthropic',
-          authorization: 'Bearer sk-ant-oat01-cindy-pi-proxy-placeholder',
+          authorization: 'Bearer sk-ant-oat01',
         }),
       );
       await expect(Promise.resolve(decision)).resolves.toEqual({

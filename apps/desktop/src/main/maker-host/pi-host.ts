@@ -132,8 +132,11 @@ const PI_ANTHROPIC_PROXY_KEY_ENV = 'CINDY_PI_ANTHROPIC_PROXY_KEY';
  * anthropic-compat-proxy-host 的 piProviderId 钉住分支)。
  * 用普通字串会让 Pi 按 x-api-key 形态发请求,proxy 再补 beta 头就会
  * 与 body 里 Pi 已注入的 `fallbacks` 等字段脱节(400 `fallbacks: Extra inputs are not permitted`)。
+ *
+ * 取值即探针要求的最短形态(二进制里只有 `sk-ant-oat` 这一个字面量,版本段不参与判定),
+ * 与仓内既有 OAuth 形态夹具同值 —— 不额外造一个更长、更像真 token 的字串去撞密钥扫描。
  */
-const PI_ANTHROPIC_PROXY_PLACEHOLDER_TOKEN = 'sk-ant-oat01-cindy-pi-proxy-placeholder';
+const PI_ANTHROPIC_PROXY_PLACEHOLDER_TOKEN = 'sk-ant-oat01';
 const PI_PROVIDER_HEADER = 'x-cindy-pi-provider-id';
 
 export interface PiBundledModelInfo {
