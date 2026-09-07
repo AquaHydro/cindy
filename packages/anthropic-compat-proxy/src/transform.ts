@@ -24,10 +24,15 @@ export { createVllmResponsesCompatibilityRule } from './vllm-responses-compatibi
  *
  * @param body 已经 parse 好的 plain object,调用前已确认 typeof body === 'object'
  *             且 body.model 命中字典 key。handler 内部不需要再做这些校验。
+ * @param ctx  本请求的 transform 上下文;需要按目标上游区别对待的 handler 读
+ *             `ctx.upstreamBase`(同一 model id 可能走网关也可能直连供应商)。
  * @returns 新的 body 对象 → 代理用它替换原 body 转发上游;
  *          null → 显式表示"虽然命中我但不需要改",代理走透传。
  */
-type ModelStripHandler = (body: Record<string, unknown>) => Record<string, unknown> | null;
+type ModelStripHandler = (
+  body: Record<string, unknown>,
+  ctx: RequestTransformCtx,
+) => Record<string, unknown> | null;
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -1383,6 +1388,51 @@ export function compactOversizedImageHistory(
 /** glm-5.2 (智谱,官方仅文本/代码模态) —— 直通与网关两条路由同一 model id。 */
 const stripGlm52: ModelStripHandler = (body) => replaceToolResultImagesWithNotice(body);
 
+/**
+ * Anthropic 官方端点精确判定 —— hostname 全等,不用 substring 包含
+ * (CodeQL js/incomplete-url-substring-sanitization: `includes('api.anthropic.com')`
+ * 会放行 `api.anthropic.com.evil.com`)。
+ */
+function isAnthropicDirectUpstream(upstreamBase: string | undefined): boolean {
+  if (!upstreamBase) return false;
+  try {
+    return new URL(upstreamBase).hostname === 'api.anthropic.com';
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Pi 订阅直连的 `fallbacks` 剥离。
+ *
+ * Pi 构造 anthropic-messages 请求时无条件注入 Pi Gateway 的私有参数
+ * (pi 0.84.4 反编译, 无 baseUrl / OAuth 判断):
+ *   params.fallbacks = model.compat.allowedFallbackModels.map((f) => ({ model: f.model }))
+ * Claude 订阅路由把 Pi 直接接到官方端点, 该参数一律 400:
+ *   fallbacks: Extra inputs are not permitted
+ * → 自带 allowedFallbackModels 的模型每一轮都发不出去, 会话完全不可用。
+ *
+ * **只在直连 api.anthropic.com 时剥**。同一个 model id 也可能走网关路由,那条路
+ * 能消费 `fallbacks`;无条件删会把 Pi 配好的降级链废掉,主模型一抖就是一次失败的
+ * turn —— 正是 pi-harness.md §3.1「不得让同版本 Pi 原本能完成的事情因 Cindy 控制层
+ * 新增判断而失败」禁止的退化。目标上游由 proxy 经 ctx.upstreamBase 给出,host 侧
+ * 不用复刻路由逻辑;拿不到(undefined)时按不剥处理,宁可漏剥也不误伤网关路由。
+ *
+ * 登记范围 = Pi 内置目录里带 allowedFallbackModels 的 anthropic 模型 (0.84.4:
+ * claude-fable-5 / claude-opus-5)。其余 claude-* 保持字节透传 —— 不为一个 Pi 侧
+ * 字段让全部 Claude Code 流量多一次 JSON 解析+序列化。Pi 后续版本给别的模型加了
+ * allowedFallbackModels, 在此补登记即可。
+ *
+ * 无该字段时返回 null(Claude Code 等其它来源的同 id 请求继续字节透传, 保 cache)。
+ */
+const stripPiGatewayFallbacks: ModelStripHandler = (body, ctx) => {
+  if (!('fallbacks' in body)) return null;
+  if (!isAnthropicDirectUpstream(ctx.upstreamBase)) return null;
+  const next: Record<string, unknown> = { ...body };
+  delete next.fallbacks;
+  return next;
+};
+
 // ───────────────────────────────────────────────────────────────────────────
 // 分发表
 // ───────────────────────────────────────────────────────────────────────────
@@ -1404,12 +1454,17 @@ const STRIP_HANDLERS: Readonly<Record<string, ModelStripHandler>> = {
   'z-ai/glm-5.2': stripGlm52,
   'glm-5.2[1m]': stripGlm52,
   'z-ai/glm-5.2[1m]': stripGlm52,
+  // Pi 按 compat.allowedFallbackModels 注入 Gateway 私有参数 `fallbacks`,直连官方
+  // 端点时 400(handler 内按 ctx.upstreamBase 分路由)。Pi 的 anthropic wireId 无前缀
+  // 无后缀,登记裸 id 即可。
+  'claude-fable-5': stripPiGatewayFallbacks,
+  'claude-opus-5': stripPiGatewayFallbacks,
 };
 
 /**
  * 默认 transform —— 按 model 分发到对应 handler;查不到就透传。
  */
-export const stripNonAnthropicFields: RequestTransform = (body) => {
+export const stripNonAnthropicFields: RequestTransform = (body, ctx) => {
   if (!isPlainObject(body)) return null;
 
   const model = body.model;
@@ -1418,7 +1473,7 @@ export const stripNonAnthropicFields: RequestTransform = (body) => {
   const handler = STRIP_HANDLERS[model];
   if (!handler) return null;
 
-  return handler(body);
+  return handler(body, ctx);
 };
 
 /**

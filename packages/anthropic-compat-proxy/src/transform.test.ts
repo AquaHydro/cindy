@@ -1123,7 +1123,7 @@ describe('stripNonAnthropicFields · glm-5.2 tool_result 图像降级 (#794)', (
 
   it('未登记的 model 不受影响(字节透传)', () => {
     expect(
-      stripNonAnthropicFields(makeBody('claude-opus-5'), ctx),
+      stripNonAnthropicFields(makeBody('claude-sonnet-5'), ctx),
     ).toBeNull();
   });
 
@@ -1133,6 +1133,58 @@ describe('stripNonAnthropicFields · glm-5.2 tool_result 图像降级 (#794)', (
       messages: [{ role: 'user', content: [imageBlock] }],
     };
     expect(stripNonAnthropicFields(body, ctx)).toBeNull();
+  });
+});
+
+describe('stripNonAnthropicFields · Pi Gateway fallbacks 剥离(Claude 订阅直连)', () => {
+  const direct = (upstreamBase: string | undefined): RequestTransformCtx => ({
+    reqId: 1,
+    method: 'POST',
+    url: '/v1/messages',
+    headers: {},
+    ...(upstreamBase === undefined ? {} : { upstreamBase }),
+  });
+  const anthropicCtx = direct('https://api.anthropic.com');
+
+  const makeBody = (model: string, withFallbacks: boolean): Record<string, unknown> => ({
+    model,
+    messages: [{ role: 'user', content: 'hi' }],
+    ...(withFallbacks ? { fallbacks: [{ model: 'claude-opus-4-8' }] } : {}),
+  });
+
+  it.each(['claude-fable-5', 'claude-opus-5'])(
+    '%s:直连 api.anthropic.com 时删掉 fallbacks,其余字段原样保留',
+    (model) => {
+      const out = stripNonAnthropicFields(makeBody(model, true), anthropicCtx) as Record<
+        string,
+        unknown
+      > | null;
+      expect(out).not.toBeNull();
+      expect(out).not.toHaveProperty('fallbacks');
+      expect(out).toMatchObject({ model, messages: [{ role: 'user', content: 'hi' }] });
+    },
+  );
+
+  it.each(['claude-fable-5', 'claude-opus-5'])(
+    '%s:请求本就没有 fallbacks 时返回 null(字节透传,保 cache)',
+    (model) => {
+      expect(stripNonAnthropicFields(makeBody(model, false), anthropicCtx)).toBeNull();
+    },
+  );
+
+  // 网关路由能消费 fallbacks —— 删掉会废掉 Pi 配好的降级链(pi-harness.md §3.1 非退化红线)。
+  it.each([
+    ['网关路由', 'https://gateway.example.com'],
+    ['同后缀的钓鱼域名', 'https://api.anthropic.com.evil.com'],
+    ['路由未解析(undefined)', undefined],
+  ])('%s:保留 fallbacks 不动', (_label, upstreamBase) => {
+    expect(
+      stripNonAnthropicFields(makeBody('claude-opus-5', true), direct(upstreamBase)),
+    ).toBeNull();
+  });
+
+  it('未登记的 claude 模型即使带 fallbacks 也不动(Pi 不会给它们注入)', () => {
+    expect(stripNonAnthropicFields(makeBody('claude-sonnet-5', true), anthropicCtx)).toBeNull();
   });
 });
 
