@@ -16,6 +16,8 @@
  *  bridge handler 注册,scope 门单测见 providerRoute.test.ts。)
  */
 
+import { createServer, type IncomingHttpHeaders } from 'node:http';
+import { createAnthropicCompatProxy, type ProxyHandle } from '@cindy/anthropic-compat-proxy';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../appCapabilities.js', () => ({
@@ -499,6 +501,77 @@ describe('pi routingTransform — xdt session header selects the Pi provider rou
 
     disposeReplacement();
     expect(authenticatePiProxySession('sess-pi', 'stable-secret')).toBe(false);
+  });
+
+  it('preserves Pi OAuth betas and fallbacks on the final upstream request while replacing placeholder auth', async () => {
+    const placeholder = 'sk-ant-oat01-cindy-pi-proxy-placeholder';
+    const beta = 'claude-code-20250219,oauth-2025-04-20,server-side-fallback-2026-07-01';
+    const body = {
+      model: 'claude-opus-5',
+      messages: [{ role: 'user', content: 'ping' }],
+      max_tokens: 16,
+      fallbacks: [{ model: 'claude-opus-4-8' }],
+    };
+    const received: Array<{ headers: IncomingHttpHeaders; body: string }> = [];
+    const upstream = createServer(async (req, res) => {
+      let raw = '';
+      for await (const chunk of req) raw += chunk;
+      received.push({ headers: req.headers, body: raw });
+      res.writeHead(200, { 'content-type': 'application/json' });
+      res.end('{}');
+    });
+    let proxy: ProxyHandle | undefined;
+    try {
+      await new Promise<void>((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+      const address = upstream.address();
+      if (!address || typeof address === 'string') throw new Error('Missing test upstream address');
+      const upstreamUrl = `http://127.0.0.1:${address.port}`;
+      setSessionProvider('sess-pi', 'anthropic');
+      setProviderOAuthTokenReader((providerId, agent) =>
+        providerId === 'anthropic' && agent === 'pi' ? 'fixture-claude-token' : null,
+      );
+      registerPiProxySession('sess-pi', 'session-secret', () => 'anthropic');
+      const route = createModelRoutingTransform();
+      proxy = await createAnthropicCompatProxy({
+        upstream: upstreamUrl,
+        routingTransform: async (requestBody, ctx) => {
+          const decision = await route(requestBody, ctx);
+          expect(decision?.upstreamOverride).toBe('https://api.anthropic.com');
+          // Keep the real routing/header decision; only replace its network destination.
+          return { ...decision, upstreamOverride: upstreamUrl };
+        },
+      });
+      const response = await fetch(`${proxy.url}/v1/messages`, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization: `Bearer ${placeholder}`,
+          'x-api-key': placeholder,
+          'anthropic-beta': beta,
+          'x-cindy-pi-session-id': 'sess-pi',
+          'x-cindy-pi-session-token': 'session-secret',
+          'x-cindy-pi-provider-id': 'anthropic',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(5_000),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(received).toHaveLength(1);
+      expect(received[0].headers).toMatchObject({
+        authorization: 'Bearer fixture-claude-token',
+        'anthropic-version': '2023-06-01',
+        'anthropic-beta': beta,
+      });
+      for (const name of ['x-api-key', 'x-cindy-pi-session-id', 'x-cindy-pi-session-token', 'x-cindy-pi-provider-id']) {
+        expect(received[0].headers[name]).toBeUndefined();
+      }
+      expect(JSON.stringify(received[0])).not.toContain(placeholder);
+      expect(JSON.parse(received[0].body)).toEqual(body);
+    } finally {
+      await proxy?.dispose();
+      await new Promise<void>((resolve, reject) => upstream.close((error) => error ? reject(error) : resolve()));
+    }
   });
 
   it('routes an Anthropic Pi request with host-managed OAuth and strips Pi placeholder auth', async () => {
