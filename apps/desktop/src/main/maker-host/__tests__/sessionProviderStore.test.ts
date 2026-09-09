@@ -4,6 +4,9 @@
  * learn-host 等在 createSession 之前自行写好 store 的路径。
  */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
@@ -45,5 +48,22 @@ describe('freezeSessionProviderAtStart', () => {
     freezeSessionProviderAtStart('s-blank', '  ');
     expect(hasSessionProvider('s-blank')).toBe(true);
     expect(getSessionProvider('s-blank')).toBeNull();
+  });
+});
+
+/**
+ * 接线本身也要钉住,否则删掉调用点这组三态断言照样全绿。钩子早于
+ * `agent.startSession` 那半由 maker-core 的 order 断言保证,这里不重复。
+ */
+describe('启动边界接线', () => {
+  it('冻结挂在 prepareStartOptions 内,且排在账号就绪门之后', () => {
+    const makerHostSource = readFileSync(resolve(__dirname, '..', 'index.ts'), 'utf8');
+    const hook = makerHostSource.indexOf('prepareStartOptions: async');
+    const gate = makerHostSource.indexOf('!providerReady', hook);
+    const freeze = makerHostSource.indexOf('freezeSessionProviderAtStart(sessionId', hook);
+
+    expect(hook).toBeGreaterThanOrEqual(0);
+    expect(gate).toBeGreaterThan(hook);
+    expect(freeze).toBeGreaterThan(gate);
   });
 });
