@@ -166,6 +166,16 @@ export function getClaudeProxySessionAuth(
   };
 }
 
+/** 401 for a Claude Code request whose loopback session identity cannot be trusted. */
+function refuseCcSessionRequest(code: string, message: string): RoutingDecision {
+  return {
+    localHandler: async ({ res }) => {
+      res.writeHead(401, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', code, message } }));
+    },
+  };
+}
+
 /** Internal proxy headers are only safe when this process owns the loopback hop. */
 export function isAnthropicCompatProxyReady(): boolean {
   return _handle !== null;
@@ -175,8 +185,15 @@ function authenticateClaudeProxySession(sessionId: string | null, token: string 
   if (!sessionId || !token) return null;
   const registration = ccProxySessionTokens.get(sessionId);
   const expected = registration?.token;
-  if (!expected || expected.length !== token.length) return null;
-  return timingSafeEqual(Buffer.from(expected), Buffer.from(token)) ? sessionId : null;
+  if (!expected) return null;
+  // Compare byte lengths, not JS string lengths: a same-UTF-16-length token with
+  // a different UTF-8 byte length would make timingSafeEqual throw, and a
+  // throwing routingTransform never reaches the 401 below (same guard as
+  // pi-proxy-session-auth.ts).
+  const expectedBytes = Buffer.from(expected);
+  const candidateBytes = Buffer.from(token);
+  if (expectedBytes.length !== candidateBytes.length) return null;
+  return timingSafeEqual(expectedBytes, candidateBytes) ? sessionId : null;
 }
 
 // gateway api key reader —— 由 host 注入(readClaudeApiKey),避免 proxy-host 直接 import
@@ -672,17 +689,29 @@ export function createModelRoutingTransform(): RoutingTransform {
       claimedCcSessionToken,
     );
     if ((claimedCcSessionId !== null || claimedCcSessionToken !== null) && !authenticatedCcSessionId) {
-      return {
-        localHandler: async ({ res }) => {
-          res.writeHead(401, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-          res.end(JSON.stringify({ type: 'error', error: { type: 'authentication_error', code: 'invalid_cc_session_token', message: 'Invalid Claude Code proxy session token.' } }));
-        },
-      };
+      return refuseCcSessionRequest(
+        'invalid_cc_session_token',
+        'Invalid Claude Code proxy session token.',
+      );
     }
     const sdkSessionId = ctx.headers['x-claude-code-session-id'];
     const ccSessionId = sdkSessionId && _resolveCcSessionId
       ? _resolveCcSessionId(sdkSessionId)
       : null;
+    // Two identities for the same request must agree. A host attestation bound to
+    // session A plus a resolvable SDK id for session B would route as A while the
+    // activity/billing observers below record B. Stale env, process reuse or a
+    // broken identity chain — fail closed before either side is written.
+    if (authenticatedCcSessionId && ccSessionId && authenticatedCcSessionId !== ccSessionId) {
+      log.warn('cc session identity mismatch; refusing request', {
+        attested: authenticatedCcSessionId,
+        resolved: ccSessionId,
+      });
+      return refuseCcSessionRequest(
+        'cc_session_identity_mismatch',
+        'Claude Code proxy session identity does not match the SDK session.',
+      );
+    }
     const sessionId = piSessionId ?? authenticatedCcSessionId ?? ccSessionId;
     if (sdkSessionId) {
       recordClaudeApiActivity(

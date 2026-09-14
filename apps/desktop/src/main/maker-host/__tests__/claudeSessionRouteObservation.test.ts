@@ -190,6 +190,58 @@ describe('claude session route observation (routing transform ② 段)', () => {
     });
   });
 
+  it('rejects a forged token whose UTF-8 byte length differs from its UTF-16 length', async () => {
+    const auth = getClaudeProxySessionAuth('sess-fresh-kimi')!;
+    // Same JS string length as the base64url token, twice the bytes. A byte-length
+    // mismatch inside timingSafeEqual throws, and a throwing routingTransform never
+    // reaches the 401 below — it lands on the default upstream this PR is closing.
+    const forged = 'é'.repeat(auth.token.length);
+    expect(forged.length).toBe(auth.token.length);
+    expect(Buffer.from(forged).length).not.toBe(Buffer.from(auth.token).length);
+
+    const decision = await Promise.resolve(createModelRoutingTransform()(
+      { model: 'k3' },
+      ctxWith({
+        'x-cindy-cc-session-id': auth.sessionId,
+        'x-cindy-cc-session-token': forged,
+      }, 27),
+    ));
+    const writeHead = vi.fn();
+    const end = vi.fn();
+    await decision?.localHandler?.({ res: { writeHead, end } } as never);
+    expect(writeHead).toHaveBeenCalledWith(401, expect.any(Object));
+    expect(JSON.parse(end.mock.calls[0][0])).toMatchObject({
+      error: { code: 'invalid_cc_session_token' },
+    });
+    auth.dispose();
+  });
+
+  it('fails closed when the attested session and the resolved SDK session disagree', async () => {
+    const auth = getClaudeProxySessionAuth('sess-fresh-kimi')!;
+    // Valid proof for sess-fresh-kimi, but x-claude-code-session-id resolves to
+    // sess-1: routing A while recording activity on B is never correct.
+    const decision = await Promise.resolve(createModelRoutingTransform()(
+      { model: 'k3' },
+      ctxWith({
+        ...SESSION_HEADER,
+        'x-cindy-cc-session-id': auth.sessionId,
+        'x-cindy-cc-session-token': auth.token,
+      }, 28),
+    ));
+    const writeHead = vi.fn();
+    const end = vi.fn();
+    await decision?.localHandler?.({ res: { writeHead, end } } as never);
+    expect(writeHead).toHaveBeenCalledWith(401, expect.any(Object));
+    expect(JSON.parse(end.mock.calls[0][0])).toMatchObject({
+      error: { code: 'cc_session_identity_mismatch' },
+    });
+    expect(routeMocks.resolveSessionRouteDecision).not.toHaveBeenCalled();
+    expect(takeClaudeRequestRoute(28)).toBeNull();
+    expect(readClaudeSessionRoute('sess-1')).toBeNull();
+    expect(readClaudeSessionRoute('sess-fresh-kimi')).toBeNull();
+    auth.dispose();
+  });
+
   it('revokes a replaced or disposed session-instance attestation', async () => {
     const oldAuth = getClaudeProxySessionAuth('sess-fresh-kimi', 'instance-old')!;
     const currentAuth = getClaudeProxySessionAuth('sess-fresh-kimi', 'instance-current')!;
