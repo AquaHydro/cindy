@@ -79,6 +79,12 @@ interface ClaudeEnvBuildOptions {
   subagentModel?: string | null;
 }
 
+// Debug 日志开关(XDT_CC_DEBUG_NET,见本文件末尾)会让 Anthropic SDK 把**完整请求 headers**
+// 写进 sessions/<id>/cc-debug.raw.log,而它的脱敏是按 header 名写死的白名单
+// (@anthropic-ai/sdk internal/utils/log 的 formatRequestDetails)。宿主经这里注入的都是
+// 会话级凭证/证明,只能借这几个名字下发,否则会在会话仍存活、证明仍有效时明文落盘。
+const SDK_REDACTED_HEADER_NAMES = new Set(['x-api-key', 'authorization', 'cookie', 'set-cookie']);
+
 function appendProxyHeaders(env: Record<string, string>, headers: Readonly<Record<string, string>> | undefined): void {
   if (!headers || Object.keys(headers).length === 0) return;
   const managedNames = new Set(Object.keys(headers).map((name) => name.toLowerCase()));
@@ -91,6 +97,9 @@ function appendProxyHeaders(env: Record<string, string>, headers: Readonly<Recor
     .filter(Boolean);
   for (const [name, value] of Object.entries(headers)) {
     if (!/^[A-Za-z0-9-]+$/.test(name) || /[\r\n]/.test(value)) continue;
+    // 丢弃而非下发:漏掉证明只会退回「首轮按默认路由」(即 #3279 的原状),而用一个不被
+    // 脱敏的名字下发会把活证明写进磁盘日志 —— 前者可回归测试,后者是不可逆的泄漏。
+    if (!SDK_REDACTED_HEADER_NAMES.has(name.toLowerCase())) continue;
     existing.push(`${name}: ${value}`);
   }
   if (existing.length > 0) env.ANTHROPIC_CUSTOM_HEADERS = existing.join('\n');

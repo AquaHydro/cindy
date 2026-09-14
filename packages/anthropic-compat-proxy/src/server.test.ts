@@ -1588,22 +1588,20 @@ describe('anthropic-compat-proxy routingTransform', () => {
     proxy = await createAnthropicCompatProxy({
       upstream: upstream.url,
       transformRequest: [],
-      forwardHeaderDelete: ['x-cindy-cc-session-id', 'x-cindy-cc-session-token'],
+      forwardHeaderDelete: ['cookie'],
     });
 
     const response = await fetch(`${proxy.url}/v1/files`, {
       method: 'POST',
       headers: {
         'content-type': 'application/octet-stream',
-        'x-cindy-cc-session-id': 'session-1',
-        'x-cindy-cc-session-token': 'secret',
+        cookie: 'cindy-cc-session=session-1; cindy-cc-token=secret',
       },
       body: 'raw-upload',
     });
 
     expect(response.status).toBe(200);
-    expect(upstream.headers.at(-1)?.['x-cindy-cc-session-id']).toBeUndefined();
-    expect(upstream.headers.at(-1)?.['x-cindy-cc-session-token']).toBeUndefined();
+    expect(upstream.headers.at(-1)?.cookie).toBeUndefined();
   });
 
   it('routes an explicit upstream override without resolving an unavailable default upstream', async () => {

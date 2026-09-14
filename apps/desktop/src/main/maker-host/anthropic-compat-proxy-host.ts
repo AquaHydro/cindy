@@ -133,9 +133,31 @@ const log = createMakerLogger('cc-proxy');
 let _handle: ProxyHandle | null = null;
 let _initialized = false;
 
-const CC_PROXY_SESSION_ID_HEADER = 'x-cindy-cc-session-id';
-const CC_PROXY_SESSION_TOKEN_HEADER = 'x-cindy-cc-session-token';
-const CC_PROXY_INTERNAL_HEADERS = [CC_PROXY_SESSION_ID_HEADER, CC_PROXY_SESSION_TOKEN_HEADER];
+// 路由证明走 Cookie,不走 `x-cindy-cc-*` 自定义头 —— 这是**落盘泄漏**的规避,不是风格选择:
+// 「设置 → About 的 Debug 日志开关」(XDT_CC_DEBUG_NET,dev 模式硬开)会让 env-builder 设
+// ANTHROPIC_LOG=debug,Anthropic SDK 随即把每个请求的**完整 headers** 写进该会话的
+// sessions/<id>/cc-debug.raw.log。而 SDK 的脱敏是按 header 名写死的白名单
+// (@anthropic-ai/sdk internal/utils/log 的 formatRequestDetails:x-api-key /
+// authorization / cookie / set-cookie → `***`),自定义头一律原样落盘。证明在会话存活期间
+// 一直有效,明文落盘 = 本机其它进程(或用户打包外发的排障日志)可直接重放、借用该会话的
+// 供应商路由。放进 cookie 即可复用 SDK 现成的脱敏,无需我们自己处理 SDK 日志。
+// ⚠ 改这两个名字前先确认 SDK 白名单仍含 `cookie`,否则证明会重新开始明文落盘。
+const CC_PROXY_SESSION_ID_COOKIE = 'cindy-cc-session';
+const CC_PROXY_SESSION_TOKEN_COOKIE = 'cindy-cc-token';
+// CC CLI 自身不发 cookie,Anthropic / 网关上游也不消费它,整头删除即可。
+const CC_PROXY_INTERNAL_HEADERS = ['cookie'];
+
+/** Read one cookie pair out of a raw `Cookie` header. */
+function cookieValue(header: string | null, name: string): string | null {
+  if (!header) return null;
+  for (const pair of header.split(';')) {
+    const separator = pair.indexOf('=');
+    if (separator < 0) continue;
+    if (pair.slice(0, separator).trim() !== name) continue;
+    return pair.slice(separator + 1).trim() || null;
+  }
+  return null;
+}
 interface ClaudeProxySessionRegistration {
   sessionInstanceId?: string;
   token: string;
@@ -150,6 +172,10 @@ export function getClaudeProxySessionAuth(
 ): { sessionId: string; token: string; dispose: () => void } | null {
   const id = sessionId.trim();
   if (!id) return null;
+  // The proof is serialized into a Cookie header; a separator inside the id would
+  // split into an attacker-controllable second pair. Business ids never contain
+  // these, so refuse rather than escape.
+  if (/[;=,\s]/.test(id)) return null;
   const registration: ClaudeProxySessionRegistration = {
     ...(sessionInstanceId?.trim() ? { sessionInstanceId: sessionInstanceId.trim() } : {}),
     token: randomBytes(32).toString('base64url'),
@@ -682,8 +708,9 @@ export function createModelRoutingTransform(): RoutingTransform {
     // 都记一笔活动时刻。routingTransform 会处理无 body 控制面请求与 JSON 请求；
     // 非 JSON 的 POST/PUT/PATCH 不经过这里,由响应侧 observer 兜底观察活动。
     // 开销 = 一次 header 读 + 一次活跃会话表反解 + Map.set,非 per-token 路径。
-    const claimedCcSessionId = headerValue(ctx.headers, CC_PROXY_SESSION_ID_HEADER);
-    const claimedCcSessionToken = headerValue(ctx.headers, CC_PROXY_SESSION_TOKEN_HEADER);
+    const ccProxyCookie = headerValue(ctx.headers, 'cookie');
+    const claimedCcSessionId = cookieValue(ccProxyCookie, CC_PROXY_SESSION_ID_COOKIE);
+    const claimedCcSessionToken = cookieValue(ccProxyCookie, CC_PROXY_SESSION_TOKEN_COOKIE);
     const authenticatedCcSessionId = authenticateClaudeProxySession(
       claimedCcSessionId,
       claimedCcSessionToken,

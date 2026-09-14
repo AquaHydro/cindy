@@ -63,6 +63,11 @@ import {
 
 const SESSION_HEADER = { 'x-claude-code-session-id': 'sdk-abc' };
 
+/** Mirrors the Cookie serialization in claude-code/index.ts (kept out of SDK debug logs). */
+const ccProxyCookie = (sessionId: string, token: string) => ({
+  cookie: `cindy-cc-session=${sessionId}; cindy-cc-token=${token}`,
+});
+
 function ctxWith(headers: Record<string, string>, reqId = 1): RequestTransformCtx {
   return { reqId, method: 'POST', url: '/v1/messages', headers };
 }
@@ -154,8 +159,7 @@ describe('claude session route observation (routing transform ② 段)', () => {
       { model: 'k3' },
       ctxWith({
         authorization: 'Bearer stale-claude-token',
-        'x-cindy-cc-session-id': auth!.sessionId,
-        'x-cindy-cc-session-token': auth!.token,
+        ...ccProxyCookie(auth!.sessionId, auth!.token),
       }, 25),
     );
 
@@ -172,12 +176,32 @@ describe('claude session route observation (routing transform ② 段)', () => {
     clearSessionProvider('sess-fresh-kimi');
   });
 
+  it('ignores a valid proof replayed through the retired x-cindy-cc-* headers', async () => {
+    setSessionProvider('sess-retired-header', 'kimi-code');
+    const auth = getClaudeProxySessionAuth('sess-retired-header')!;
+
+    // The proof moved into Cookie so that ANTHROPIC_LOG=debug cannot write it to
+    // sessions/<id>/cc-debug.raw.log in plain text. Leaving the old custom-header
+    // channel accepted would keep that leak exploitable, so it must be inert.
+    const decision = await Promise.resolve(createModelRoutingTransform()(
+      { model: 'k3' },
+      ctxWith({
+        'x-cindy-cc-session-id': auth.sessionId,
+        'x-cindy-cc-session-token': auth.token,
+      }, 29),
+    ));
+
+    expect(routeMocks.resolveSessionRouteDecision).not.toHaveBeenCalled();
+    expect(decision?.upstreamOverride).toBeUndefined();
+    auth.dispose();
+    clearSessionProvider('sess-retired-header');
+  });
+
   it('rejects an invalid host route token instead of falling back to the default provider', async () => {
     const decision = createModelRoutingTransform()(
       { model: 'k3' },
       ctxWith({
-        'x-cindy-cc-session-id': 'sess-fresh-kimi',
-        'x-cindy-cc-session-token': 'forged',
+        ...ccProxyCookie('sess-fresh-kimi', 'forged'),
       }, 26),
     );
     const writeHead = vi.fn();
@@ -202,8 +226,7 @@ describe('claude session route observation (routing transform ② 段)', () => {
     const decision = await Promise.resolve(createModelRoutingTransform()(
       { model: 'k3' },
       ctxWith({
-        'x-cindy-cc-session-id': auth.sessionId,
-        'x-cindy-cc-session-token': forged,
+        ...ccProxyCookie(auth.sessionId, forged),
       }, 27),
     ));
     const writeHead = vi.fn();
@@ -224,8 +247,7 @@ describe('claude session route observation (routing transform ② 段)', () => {
       { model: 'k3' },
       ctxWith({
         ...SESSION_HEADER,
-        'x-cindy-cc-session-id': auth.sessionId,
-        'x-cindy-cc-session-token': auth.token,
+        ...ccProxyCookie(auth.sessionId, auth.token),
       }, 28),
     ));
     const writeHead = vi.fn();
@@ -250,8 +272,7 @@ describe('claude session route observation (routing transform ② 段)', () => {
     const oldDecision = await Promise.resolve(transform(
       { model: 'k3' },
       ctxWith({
-        'x-cindy-cc-session-id': oldAuth.sessionId,
-        'x-cindy-cc-session-token': oldAuth.token,
+        ...ccProxyCookie(oldAuth.sessionId, oldAuth.token),
       }),
     ));
     expect(oldDecision?.localHandler).toBeTypeOf('function');
@@ -260,8 +281,7 @@ describe('claude session route observation (routing transform ② 段)', () => {
     const activeDecision = await Promise.resolve(transform(
       { model: 'k3' },
       ctxWith({
-        'x-cindy-cc-session-id': currentAuth.sessionId,
-        'x-cindy-cc-session-token': currentAuth.token,
+        ...ccProxyCookie(currentAuth.sessionId, currentAuth.token),
       }),
     ));
     expect(activeDecision?.localHandler).not.toBeTypeOf('function');
@@ -270,8 +290,7 @@ describe('claude session route observation (routing transform ② 段)', () => {
     const disposedDecision = await Promise.resolve(transform(
       { model: 'k3' },
       ctxWith({
-        'x-cindy-cc-session-id': currentAuth.sessionId,
-        'x-cindy-cc-session-token': currentAuth.token,
+        ...ccProxyCookie(currentAuth.sessionId, currentAuth.token),
       }),
     ));
     expect(disposedDecision?.localHandler).toBeTypeOf('function');

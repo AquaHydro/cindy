@@ -1294,10 +1294,13 @@ export class ClaudeCodeAgent extends BaseAgent {
       credentialMode,
       sessionProviderId: opts.providerId ?? null,
       activeModel: sdkModel,
+      // Cookie(而非 `x-cindy-cc-*` 自定义头):Debug 日志开关打开时 SDK 会把完整请求
+      // headers 写进 sessions/<id>/cc-debug.raw.log,而它的脱敏白名单按 header 名写死
+      // (x-api-key / authorization / cookie / set-cookie)。自定义头会让这份**会话存活
+      // 期间一直有效**的路由证明明文落盘。详见 anthropic-compat-proxy-host.ts 的常量注释。
       proxyHeaders: proxySessionAuth
         ? {
-            'x-cindy-cc-session-id': proxySessionAuth.sessionId,
-            'x-cindy-cc-session-token': proxySessionAuth.token,
+            Cookie: `cindy-cc-session=${proxySessionAuth.sessionId}; cindy-cc-token=${proxySessionAuth.token}`,
           }
         : undefined,
       modelContextWindows,
